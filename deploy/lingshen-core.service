@@ -1,0 +1,21 @@
+[Unit]
+Description=LingShen Core (音柱播报服务)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/lingshen/app
+Environment=NODE_ENV=production
+Environment=LINGSHEN_CONFIG=/opt/lingshen/config.json
+ExecStart=/opt/lingshen/run.sh
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65535
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

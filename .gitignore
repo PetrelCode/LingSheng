@@ -1,0 +1,15 @@
+/node_modules/
+
+/dist/
+/release/
+/media/
+/config.json
+*.log
+capture-*.log
+/runtime/node-linux-x64/
+
+# TTS 产物与本地准备的引擎/SDK 资源（体积大，npm run tts:setup 生成，见 README）
+# 注意：必须带前导 /，否则会把 src/tts、src/media 这类源码目录一起忽略
+/tts/
+/tts-media/
+/runtime/tts/

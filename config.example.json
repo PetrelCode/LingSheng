@@ -1,0 +1,65 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "httpPort": 18080,
+    "publicBaseUrl": ""
+  },
+  "mqtt": {
+    "host": "0.0.0.0",
+    "port": 21883,
+    "username": "",
+    "password": ""
+  },
+  "vendor": {
+    "code": "ls20",
+    "topicMode": "double"
+  },
+  "media": {
+    "dir": "./media",
+    "urlPrefix": "/media",
+    "maxSizeMb": 100
+  },
+  "playback": {
+    "defaultVol": 60,
+    "defaultLevel": 99999,
+    "defaultCount": 1,
+    "defaultUid": ""
+  },
+  "tts": {
+    "enabled": true,
+    "root": "./tts",
+    "bin": "",
+    "appId": "5ff40276",
+    "workDir": "",
+    "voices": [
+      {
+        "id": "female",
+        "label": "女声（小燕）",
+        "jet": "xiaoyan"
+      },
+      {
+        "id": "male",
+        "label": "男声（小峰）",
+        "jet": "xiaofeng"
+      }
+    ],
+    "defaultVoice": "female",
+    "volume": 50,
+    "pitch": 50,
+    "urlPrefix": "/tts",
+    "format": "mp3",
+    "sampleRate": 16000,
+    "bitrateKbps": 32,
+    "maxChars": 300,
+    "segmentChars": 100,
+    "concurrency": 1,
+    "maxQueue": 20,
+    "timeoutMs": 30000,
+    "cacheTtlHours": 168,
+    "cacheMaxMb": 500
+  },
+  "device": {
+    "offlineTimeoutSec": 180,
+    "loginAck": {}
+  }
+}
