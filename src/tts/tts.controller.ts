@@ -51,7 +51,7 @@ export class TtsController {
   /**
    * 文字转语音并即时播报。
    * POST /api/tts/play
-   * { "text": "三号库房温度异常", "sns": ["0201A9ADAA05"], "voice": "male", "vol": 60 }
+   * { "text": "三号库房温度异常", "sns": ["0201****AA05"], "voice": "male", "vol": 60 }
    */
   @Post('tts/play')
   async play(@Body() dto: TtsPlayDto, @Req() req: Request) {

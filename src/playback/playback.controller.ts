@@ -46,7 +46,7 @@ export class PlaybackController {
   /**
    * 即时播报。
    * POST /api/play
-   * { "sns": ["0201A9ADAA05"], "media": "alarm.mp3", "vol": 60, "count": 1 }
+   * { "sns": ["0201****AA05"], "media": "alarm.mp3", "vol": 60, "count": 1 }
    */
   @Post('play')
   async play(@Body() dto: PlayDto, @Req() req: Request) {

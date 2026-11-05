@@ -1,15 +1,15 @@
 /**
  * 菱声设备协议：MQTT 报文封装与主题规则
  *
- * ====== 以下规则来自 2026-11-04 真机抓包（yinzhu_2 / 020292EB68C3）======
+ * ====== 以下规则来自设备抓包（SN 已脱敏，形如 0202****0H6R）======
  *
- * 设备上报的 sn 自带协议前缀：  "ls20://020292EB68C3"
+ * 设备上报的 sn 自带协议前缀：  "ls20://0202****0H6R"
  * 原厂 mgrserver 用 `sn.split(":")[0] + "://" + sn + "/req"` 拼主题，
- * 因此实际下行主题是：          "ls20://ls20://020292EB68C3/req"
+ * 因此实际下行主题是：          "ls20://ls20://0202****0H6R/req"
  * 上行主题：                    "ls20/request"
  * 设备掉线遗嘱：                "ls20/will"
  *
- * 本项目内部一律用「裸 SN」（020292EB68C3）作为设备标识，
+ * 本项目内部一律用「裸 SN」（0202****0H6R）作为设备标识，
  * 拼主题时再按 topicMode 还原。默认 'double' 即上面对齐原厂的写法。
  * ==================================================================
  */
@@ -18,7 +18,7 @@ export type EnvelopeType = 'req' | 'resp' | 'notif';
 
 export interface DeviceEnvelope<T = Record<string, any>> {
   type: EnvelopeType;
-  /** 回包地址，设备/采集器用，形如 ls20://020292EB68C3/resp */
+  /** 回包地址，设备/采集器用，形如 ls20://0202****0H6R/resp */
   source?: string;
   app?: string;
   /** 服务端下行多用 name，设备上行多用 op，两者等价 */
@@ -39,7 +39,7 @@ export interface DeviceEnvelope<T = Record<string, any>> {
 export type TopicMode = 'double' | 'simple' | 'vendor-colon';
 
 /**
- * 兼容 "ls20://020292EB68C3" / "ls20://ls20://020292EB68C3" / "ls20:020292EB68C3" / "020292EB68C3"
+ * 兼容 "ls20://0202****0H6R" / "ls20://ls20://0202****0H6R" / "ls20:0202****0H6R" / "0202****0H6R"
  * 统一取裸 SN。注意不要改大小写，MQTT 主题区分大小写。
  */
 export function normalizeSn(input: string): string {

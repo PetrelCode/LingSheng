@@ -1,307 +1,230 @@
 # lingsheng-core-xf
 
-菱声 LS20/LS22 音柱控制核心服务（**讯飞离线 TTS 版**）。对外提供两类能力：
+菱声 LS20/LS22 音柱控制服务（讯飞离线 TTS 版）。一个 Node 进程同时提供 HTTP 接口、内嵌 MQTT Broker 和静态文件服务，直接对音柱下发播放指令。
 
-- **API 即时播报**：调用接口让一台或多台音柱播放指定音频文件；
-- **文字转语音（TTS）**：提交一段文字，服务端离线合成音频后走同一条播报链路。
+两类能力：
 
-功能与 `lingshen-core` 完全一致，只有 TTS 引擎不同：本版本使用**旧版讯飞离线 SDK（MSC 5.0.44）**，
-沿用旧系统 `ls20_tts_xf_linux` 的 `libmsc.so` 与 `xiaoyan.jet / xiaofeng.jet` 资源。
+- **即时播报**：调接口让一台或多台音柱播放指定音频（媒体库文件或任意可访问 URL）。
+- **文字转语音**：提交文字，服务端离线合成为音频后走同一条播报链路。
 
-## 与旧版系统的关系
+## 1. 整体结构
 
-旧版 `ls22-linux` 需要 4 个进程 + RethinkDB（源码编译）+ ffmpeg + lame，全部功能耦合在一起。
-本项目只保留「即时播报」这一条链路，因此 **RTSP 推流、采集器、ffmpeg、文件服务器、RethinkDB 全部不需要**：
+```
+                 HTTP API :18080                   MQTT :21883
+   外部系统 ──────────►┌──────────────────────────────────────┐◄────── 音柱设备
+   浏览器/设备 ◄───────│  NestJS 单进程                        │
+     (下载音频)        │  ├ PlaybackService  下发播放/停止/音量  │
+                       │  ├ DevicesService   注册表 + 登录应答  │
+                       │  ├ TtsService       归一化/切段/合成   │
+                       │  └ MediaService     媒体库 + 静态挂载  │
+                       └──────────────────────────────────────┘
+```
 
-| 旧版组件 | 新版 |
+所有状态都在内存里，没有数据库、没有 RTSP、没有 ffmpeg/lame、没有外部中间件。
+
+与厂家提供的 `ls22-linux` 的对应关系：
+
+| 厂家版本组件 | 本项目 |
 |---|---|
-| `mgrserver`（业务 + MQTT Broker + Web） | 本服务（NestJS 单进程） |
-| `rethinkdb` | 无（状态全在内存） |
-| `resserver`（HTTP 文件 + RTSP） | 本服务内置静态文件服务 |
-| `collector` + `player` + `ffmpeg` + ALSA | 不需要 |
-| `tts_xf.sh` + 讯飞离线 SDK + `lame` | 本服务内置 `xf-tts`（C 封装，直接调讯飞 MSC）+ 纯 JS 编码 MP3 |
+| `mgrserver`（业务 + MQTT Broker + Web） | 本服务（HTTP + aedes Broker） |
+| `resserver`（HTTP 文件 + RTSP） | 内置静态文件服务（`/media`、`/tts`） |
+| `rethinkdb` | 无，状态全在内存 |
+| `collector` / `player` / `ffmpeg` / ALSA | 不需要，设备自己下载播放 |
+| `tts_xf.sh` + 讯飞 SDK + `lame` | 内置 `xf-tts`（C 封装）+ 纯 JS MP3 编码 |
 
-部署形态：**1 个进程、2 个端口、无外部依赖**；唯一需要在目标机（或同架构机器）上做的一次编译是 TTS 引擎封装 `xf-tts`（`npm run tts:build`，只依赖 gcc，约 1 秒）。
-
-## 快速开始（开发机）
-
-```bash
-npm install
-cp config.example.json config.json   # Windows: copy config.example.json config.json
-npm run build
-npm start
-```
-
-> 本项目用 **npm** 管理依赖（打包脚本也走 npm）。若用 pnpm 12+，需先执行一次 `pnpm approve-builds` 放行 `@nestjs/core` 的构建脚本，否则 pnpm 会以 `ERR_PNPM_IGNORED_BUILDS` 中断（依赖实际已装好，不影响使用）。
-
-启动后：
-
-- `http://localhost:18080/` 接口索引
-- `http://localhost:18080/api/health` 健康检查
-
-## 配置
-
-`config.json` 全部字段见 `config.example.json`，常用项：
-
-| 字段 | 说明 |
-|---|---|
-| `server.httpPort` | HTTP 端口，默认 18080 |
-| `server.publicBaseUrl` | **设备访问本机的地址**，如 `http://192.168.1.10:18080`。留空则按请求 host 推断 |
-| `mqtt.port` | 内嵌 MQTT Broker 端口，默认 21883（与旧系统一致，设备不用改配置） |
-| `vendor.code` | 厂商编号，默认 `ls20` |
-| `vendor.topicMode` | 下行主题规则。`mgrserver`（默认，对齐原厂实现）或 `simple` |
-| `media.dir` | 音频文件目录 |
-
-## API
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| POST | `/api/play` | 即时播报 |
-| POST | `/api/stop` | 停止 |
-| POST | `/api/volume` | 调音量（任务音量，影响当前任务） |
-| POST | `/api/mute` | 设备静音（整机，盖掉所有播放） |
-| POST | `/api/unmute` | 取消设备静音 |
-| POST | `/api/media` | 上传音频（multipart，字段名 `file`，支持 mp3/wav/aac/m4a/ogg/flac） |
-| GET | `/api/media` | 媒体列表 |
-| DELETE | `/api/media/:name` | 删除音频 |
-| GET | `/api/devices` | 设备列表与在线状态 |
-| GET | `/api/devices/connections` | 当前 MQTT 连接（联调用） |
-| GET | `/api/tasks` | 本服务当前下发的任务 |
-| POST | `/api/tts/play` | 文字转语音并即时播报 |
-| POST | `/api/tts` | 只合成不播报，返回音频地址 |
-| GET | `/api/tts/status` | TTS 引擎与缓存状态 |
-| GET | `/api/tts/voices` | 可用音色 |
-
-### 播报示例
-
-```bash
-# 播放媒体库里已有的文件
-curl -X POST http://127.0.0.1:18080/api/play \
-  -H 'Content-Type: application/json' \
-  -d '{"sns":["0201A9ADAA05"],"media":"alarm.mp3","vol":60,"count":1}'
-
-# 播放任意可访问的地址
-curl -X POST http://127.0.0.1:18080/api/play \
-  -H 'Content-Type: application/json' \
-  -d '{"sns":["0201A9ADAA05"],"url":"http://192.168.1.10:18080/media/alarm.mp3","vol":80}'
-
-# 停止
-curl -X POST http://127.0.0.1:18080/api/stop \
-  -H 'Content-Type: application/json' -d '{"sns":["0201A9ADAA05"]}'
-
-# 静音 / 取消静音
-curl -X POST http://127.0.0.1:18080/api/mute \
-  -H 'Content-Type: application/json' -d '{"sns":["0201A9ADAA05"]}'
-curl -X POST http://127.0.0.1:18080/api/unmute \
-  -H 'Content-Type: application/json' -d '{"sns":["0201A9ADAA05"]}'
-```
-
-> 音量是两层的：`实际音量 = 任务音量 × (设备音量 / 100)`。`/api/volume` 改的是任务音量。
-
-`sns` 支持 `0201A9ADAA05`、`ls20:0201A9ADAA05`、`ls20://0201A9ADAA05` 三种写法。
-
-## 文字转语音（TTS）
-
-完全离线，不依赖任何云服务。引擎是**旧版讯飞离线 SDK（MSC 5.0.44）**，与旧系统 `resserver` 用的是同一套
-`libmsc.so` + `xiaoyan.jet / xiaofeng.jet`；区别是把 `tts` 与 `lame` 两个外部程序换成
-`xf-tts`（本仓库 `native/` 下的 C 代码，直接调 MSC 接口）+ 纯 JS MP3 编码。
-
-TTS 只负责「产出音频文件」，播报仍走上面同一条 `priority_task_play` 链路，**设备侧协议无任何改动**。
+## 2. 目录结构
 
 ```
-POST /api/tts/play { text, sns }
-      │
-      ├─ 文本归一化：数字/单位/日期转口语（3号库房 25.5℃ → 三号库房 二十五点五摄氏度）
-      ├─ 按标点切段（默认 ≤100 字/段，一段一个 URL，设备顺序播放）
-      ├─ xf-tts 子进程：MSPLogin → QTTSSessionBegin → QTTSTextPut → QTTSAudioGet → 写 WAV
-      ├─ 重采样到 16kHz + 纯 JS 编码 MP3（不需要 ffmpeg / lame）
-      ├─ 哈希命名落盘，命中缓存直接跳过合成
-      └─ 复用 PlaybackService 下发
+src/
+  main.ts                  启动、静态目录挂载
+  config/config.ts         配置加载与路径解析
+  mqtt/                    内嵌 aedes Broker
+  devices/                 设备注册表、devLogin 应答
+  playback/                播放/停止/音量/静音下发
+  media/                   媒体库上传、列表、删除
+  tts/                     合成、缓存、文本归一化、MP3 编码
+  protocol/                主题规则与报文封装
+native/                    xf-tts 的 C 源码与 Makefile
+tools/                     SDK 准备脚本、抓包工具
+deploy/                    离线打包与安装脚本
 ```
 
-### 目录结构
+## 3. 配置
 
-SDK 与引擎**不进 `node_modules`**，单独放在 `tts.root` 下，布局与旧系统 `ls20_tts_xf_linux` 一致：
-
-```
-tts/
-  bin/xf-tts                        # 本仓库 native/ 编译产物
-  lib/libmsc.so                     # 讯飞 MSC 5.0.44 动态库
-  msc/                              # MSC 工作目录（tts.workDir，默认即 tts.root）
-    msc.cfg                         # MSC 日志配置
-    res/tts/
-      common.jet                    # 通用资源
-      xiaoyan.jet                   # 女声
-      xiaofeng.jet                  # 男声
-    *.log / *.ldata                 # 运行时生成，可随时删
-  cache/                            # 合成产物，静态挂载到 /tts
-```
-
-> MSC 把日志与授权缓存写到 `<workDir>/msc/`，所以 `msc/res/tts` 与日志同目录。
-> 资源路径在合成时按绝对路径传给 SDK，不依赖进程 cwd。
-
-### 准备 SDK 与编译引擎（Linux x64）
-
-旧 SDK 不联网下载，从旧系统目录复制即可。默认取本仓库同级的
-`../ls22-linux_2026-04-07/ls22-linux/resserver/ls20_tts_xf_linux`：
-
-```bash
-npm run tts:setup                                          # 复制 libmsc.so 与 msc/res/tts/*.jet 到 runtime/tts
-npm run tts:setup -- --from=/path/to/ls20_tts_xf_linux     # 指定其他目录
-XF_SDK_DIR=/path/to/ls20_tts_xf_linux npm run tts:setup    # 或走环境变量
-```
-
-然后编译引擎封装（需要 gcc + make）：
-
-```bash
-npm run tts:build     # make -C native，产出 runtime/tts/bin/xf-tts
-npm run tts:check     # ldd 依赖 + xf-tts --help
-```
-
-复制内容（约 10 MB）：
-
-| 文件 | 大小 | 用途 |
-|---|---|---|
-| `libmsc.so` | 6.0 MB | 讯飞 MSC 5.0.44 动态库 |
-| `msc/res/tts/common.jet` | 4.1 MB | 通用资源 |
-| `msc/res/tts/xiaoyan.jet` | 3.9 MB | 女声 |
-| `msc/res/tts/xiaofeng.jet` | 1.3 MB | 男声 |
-
-要求 **Linux x64 + gcc**；`libmsc.so` 最高只依赖 `GLIBC_2.15`，麒麟 V10 / CentOS 7+ 均可。
-旧目录里的 `*.log`、`*.logcache`、`*.ldata` 缓存不会被复制。
-
-`runtime/tts/` 已在 `.gitignore` 中，不会进版本库。开发机本地调试时把 `config.json` 的 `tts.root` 设为 `./runtime/tts`。
-**Windows 上只能执行 `tts:setup` 准备文件**：没有 Windows 版旧 SDK，`tts:build` 与合成必须在 Linux 上做。
-
-### 打包与安装
-
-```bash
-npm run pack:offline        # 生成 release/lingsheng-core-xf-<ver>.tar.gz，内含 tts/
-```
-
-目标机：
-
-```bash
-tar xzf lingsheng-core-xf-<ver>.tar.gz -C /tmp/pack
-sh /tmp/pack/deploy/install.sh
-```
-
-`install.sh` 会把 `tts/` 复制到 `/opt/lingshen/tts`、补执行位、创建 `cache/`，并把新生成的 `config.json` 里 `tts.root` 改成绝对路径（升级场景也会自动纠正相对路径）。
-
-> 没执行 `tts:setup` / `tts:build` 时，打包仍会成功，`install.sh` 打印缺少引擎的提示，TTS 接口返回 503，原有播报功能不受影响。
-
-### 配置
+服务直接读取进程工作目录下的 `config.json`，缺失字段使用内置默认值（文件不存在时全部走默认值）。全部字段见 `config.example.json`，常用项：
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `tts.enabled` | `true` | 关闭后 TTS 接口返回 503，不影响 `/api/play` |
-| `tts.root` | `./tts` | 引擎、SDK 资源、缓存根目录（相对路径按进程工作目录解析） |
-| `tts.bin` | 空 | 引擎路径，留空用 `<root>/bin/xf-tts`（相对路径按进程工作目录解析） |
-| `tts.appId` | `5ff40276` | 讯飞 MSC appid，必须与 jet 资源授权一致，否则报 11200 |
-| `tts.workDir` | 空 | MSC 工作目录，留空用 `tts.root`；相对路径按 `tts.root` 解析 |
-| `tts.voices` | 女声 + 男声 | `{id,label,jet}`，`jet` 对应 `<workDir>/msc/res/tts/<jet>.jet`，同时作为 `voice_name` |
-| `tts.defaultVoice` | `female` | 默认音色 id，留空取第一个 |
-| `tts.volume` | `50` | 默认合成音量 0-100 |
-| `tts.pitch` | `50` | 默认音调 0-100 |
-| `tts.format` | `mp3` | `mp3` 或 `wav`；mp3 对齐旧系统真机验证过的 16kHz 单声道 |
-| `tts.sampleRate` | `16000` | 输出采样率，`0` 表示保持引擎原始采样率 |
-| `tts.bitrateKbps` | `32` | MP3 码率 |
-| `tts.maxChars` | `300` | 单次请求文本上限，超出返回 400 |
-| `tts.segmentChars` | `100` | 切段长度，一段一个 URL |
-| `tts.concurrency` | `1` | 并发合成数。每段是一个 MSC 进程，建议保持 1 |
-| `tts.maxQueue` | `20` | 排队上限，超出返回 503 |
-| `tts.timeoutMs` | `30000` | 单段合成超时，超时 kill 子进程 |
-| `tts.cacheTtlHours` | `168` | 产物保留时长（小时） |
-| `tts.cacheMaxMb` | `500` | 产物总容量上限，超出按最旧优先淘汰 |
+| `server.httpPort` | `18080` | HTTP 端口 |
+| `server.publicBaseUrl` | 空 | **设备访问本机的地址**，如 `http://192.168.1.10:18080`；留空按请求 host 推断 |
+| `mqtt.port` | `21883` | 内嵌 Broker 端口，与厂家版本一致，设备不用改配置 |
+| `mqtt.username/password` | 空 | 留空表示免认证 |
+| `vendor.code` | `ls20` | 厂商编号，参与主题与报文 `app` 字段 |
+| `vendor.topicMode` | `double` | 下行主题规则，见第 6 节 |
+| `media.dir` | `./media` | 音频目录，挂载到 `/media` |
+| `media.maxSizeMb` | `100` | 上传大小上限 |
+| `playback.defaultVol` | `60` | 默认任务音量 0-100 |
+| `playback.defaultLevel` | `99999` | 默认优先级 |
+| `device.offlineTimeoutSec` | `180` | 超过该时长无上报判定离线 |
+| `tts.*` | 见第 5.5 节 | 语音合成相关 |
 
-### 音色
+也可用环境变量覆盖（优先级高于 `config.json`）：
 
-旧 SDK 只带两套音色资源，一个 `.jet` 就是一个音色：
+`LINGSHEN_CONFIG`（配置文件路径）、`LINGSHEN_HTTP_PORT`、`LINGSHEN_MQTT_PORT`、`LINGSHEN_PUBLIC_BASE_URL`、`LINGSHEN_MEDIA_DIR`、`LINGSHEN_TTS_ROOT`、`LINGSHEN_TTS_BIN`、`LINGSHEN_TTS_APP_ID`、`LINGSHEN_TTS_WORK_DIR`、`LINGSHEN_TTS_ENABLED`。
 
-| id | label | jet | 说明 |
-|---|---|---|---|
-| `female` | 女声（小燕） | `xiaoyan` | 默认音色 |
-| `male` | 男声（小峰） | `xiaofeng` | 默认男声 |
+## 4. 接口
 
-配置示例：
+### 4.1 接口一览
 
-```json
-"tts": {
-  "appId": "5ff40276",
-  "voices": [
-    { "id": "female", "label": "女声（小燕）", "jet": "xiaoyan" },
-    { "id": "male", "label": "男声（小峰）", "jet": "xiaofeng" }
-  ],
-  "defaultVoice": "female",
-  "volume": 50,
-  "pitch": 50
-}
-```
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/` | 接口索引 |
+| GET | `/api/health` | 健康检查 |
+| POST | `/api/play` | 即时播报 |
+| POST | `/api/stop` | 停止播报 |
+| POST | `/api/volume` | 调整任务音量 |
+| POST | `/api/mute` | 设备整机静音 |
+| POST | `/api/unmute` | 取消设备静音 |
+| POST | `/api/media` | 上传音频（multipart，字段 `file`） |
+| GET | `/api/media` | 媒体列表 |
+| DELETE | `/api/media/:name` | 删除音频 |
+| POST | `/api/tts/play` | 合成并播报 |
+| POST | `/api/tts` | 只合成，返回音频地址 |
+| GET | `/api/tts/status` | 引擎、队列、缓存状态 |
+| GET | `/api/tts/voices` | 可用音色 |
+| GET | `/api/devices` | 设备列表与在线状态 |
+| GET | `/api/devices/connections` | 当前 MQTT 连接（联调用） |
+| GET | `/api/devices/:sn` | 单台设备详情 |
+| GET | `/api/tasks` | 本服务当前下发的任务 |
 
-新增音色 = 把 `xxx.jet` 放进 `tts/msc/res/tts/`，再在 `tts.voices` 里加一项
-`{ "id": "xxx", "label": "…", "jet": "xxx" }`。**音色资源必须与 `tts.appId` 的授权匹配**，
-未授权的 jet 会在合成时返回 `11200`。
+`sns` 支持三种写法：`0202****0H6R`、`ls20:0202****0H6R`、`ls20://0202****0H6R`，服务内部统一转成裸 SN。
 
-**调用**
+### 4.2 播报
 
 ```bash
-curl http://127.0.0.1:18080/api/tts/voices          # 列出音色与可用状态
-curl -X POST http://127.0.0.1:18080/api/tts/play \
+# 播放媒体库文件
+curl -X POST http://127.0.0.1:18080/api/play \
   -H 'Content-Type: application/json' \
-  -d '{"text":"请注意，三号库房温度异常","voice":"male","sns":["0201A9ADAA05"]}'
+  -d '{"sns":["0202****0H6R"],"media":"alarm.mp3","vol":60,"count":1}'
+
+# 播放任意可访问地址
+curl -X POST http://127.0.0.1:18080/api/play \
+  -H 'Content-Type: application/json' \
+  -d '{"sns":["0202****0H6R"],"url":"http://192.168.1.10:18080/media/alarm.mp3","vol":80}'
 ```
 
-- 不传 `voice` 用 `tts.defaultVoice`（留空取第一个）；
-- `speed` / `volume` / `pitch` 均为 0-100，50 为正常，缺省走配置；
-- 音色、参数、文本任意一项不同，都是不同的缓存文件，互不覆盖；
-- 单段合成默认 30 秒超时（`tts.timeoutMs`），超时会 kill 子进程并返回 503。
+请求字段：
 
-### 手动排查
-
-先确认引擎本身能出声（不经过服务）：
-
-```bash
-cd /opt/lingshen/tts
-printf '三号库房温度异常，请及时处理。' > /tmp/t.txt
-LD_LIBRARY_PATH=lib ./bin/xf-tts \
-  --text-file /tmp/t.txt --output /tmp/t.wav \
-  --appid 5ff40276 \
-  --work-dir /opt/lingshen/tts \
-  --res-dir /opt/lingshen/tts/msc/res/tts \
-  --voice xiaoyan --speed 50 --volume 50 --pitch 50
-```
-
-排查路径问题时加 `--verbose`，会打印实际 cwd、work_dir、传给 MSC 的资源路径以及每次 `QTTSAudioGet` 的返回值：
-
-```bash
-LD_LIBRARY_PATH=lib ./bin/xf-tts ... --verbose
-```
-
-| 现象 | 排查方向 |
+| 字段 | 说明 |
 |---|---|
-| `MSPLogin failed` / `11200` | `tts.appId` 与 jet 授权不匹配。注意日志里的 `read auth file failed err=11200` 是非致命警告，合成成功可忽略 |
-| `QTTSSessionBegin failed` / `10105` | `--work-dir`、`--res-dir` 路径不对，或 jet 文件缺失 |
-| `合成结果为空` | MSC 只认「相对 `<work-dir>/msc`」的资源路径。`xf-tts` 已自动把 `--res-dir` 转成 `res/tts/xxx.jet`，若仍为空，用 `--verbose` 看实际 cwd/res，并确认 `msc/res/tts` 下确实有 jet |
-| `缺少音色资源` | `msc/res/tts/<jet>.jet` 没复制过来，重新 `npm run tts:setup` |
-| `libmsc.so: cannot open shared object file` | 用 `--bin` 指定了别处的 `xf-tts`，导致 `$ORIGIN/../lib` 失效；保持默认布局或补 `LD_LIBRARY_PATH` |
-| 合成很慢 | 每次合成都会加载 jet 资源；确认 `tts.concurrency` 为 1，避免多进程抢 CPU |
+| `sns` | 必填，设备 SN 数组 |
+| `media` / `url` | 二选一。`media` 是媒体库文件名，`url` 可为绝对地址或站内相对路径 |
+| `vol` | 任务音量 0-100，默认 `playback.defaultVol` |
+| `level` | 优先级，默认 `99999` |
+| `count` | 播放次数，默认 1 |
+| `length` | 播放时长（秒），0 表示整段播完 |
+| `name` | 任务名，设备端显示 |
+| `tid` | 自定义任务 ID，留空自动生成 |
+| `baseUrl` | 覆盖本次下发给设备的文件根地址 |
 
-详细日志在 `tts/msc/msc.log`、`tts/msc/tts_local.log`，可用 `tts/msc/msc.cfg` 调整级别。
+返回 `code`、`tid`、`uri`，以及每台设备的下发结果 `results[{sn,topic,ok,error?}]`。
 
-### 调用示例
+### 4.3 停止 / 音量 / 静音
 
 ```bash
-# 文字转语音 + 播报
+# 停止（不传 tid 时按本服务记录的任务停止）
+curl -X POST http://127.0.0.1:18080/api/stop \
+  -H 'Content-Type: application/json' -d '{"sns":["0202****0H6R"]}'
+
+# 任务音量
+curl -X POST http://127.0.0.1:18080/api/volume \
+  -H 'Content-Type: application/json' -d '{"sns":["0202****0H6R"],"vol":40}'
+
+# 设备整机静音 / 取消
+curl -X POST http://127.0.0.1:18080/api/mute   -H 'Content-Type: application/json' -d '{"sns":["0202****0H6R"]}'
+curl -X POST http://127.0.0.1:18080/api/unmute -H 'Content-Type: application/json' -d '{"sns":["0202****0H6R"]}'
+```
+
+音量分两层：**实际音量 = 任务音量 × 设备音量 / 100**。`/api/volume` 改的是任务音量；静音是设备整机行为，会盖掉所有正在播放的内容。
+
+`/api/tasks` 只能看到本进程下发过的任务，服务重启后为空，此时 `/api/stop` 需显式传 `tid`。
+
+### 4.4 媒体库
+
+```bash
+curl -F 'file=@alarm.mp3' http://127.0.0.1:18080/api/media   # 上传
+curl http://127.0.0.1:18080/api/media                        # 列表
+curl -X DELETE http://127.0.0.1:18080/api/media/alarm.mp3    # 删除
+```
+
+支持 `mp3/wav/aac/m4a/ogg/flac`。上传时文件名会被改成 ASCII 安全字符（中文/空格替换为 `_`），重名自动追加序号，避免音柱固件对编码支持不一致。
+
+## 5. 文字转语音（TTS）
+
+完全离线，不依赖云服务。引擎是厂家提供的讯飞离线 SDK（MSC 5.0.44），沿用 `ls22-linux` 中 `ls20_tts_xf_linux` 的 `libmsc.so` 与 jet 资源。**仅支持 Linux x64**，Windows 上只能准备文件、无法合成。
+
+### 5.1 处理流程
+
+```
+POST /api/tts/play { text, sns }
+   ├─ 文本归一化：数字/单位/日期转口语（3号库房 25.5℃ → 三号库房 二十五点五摄氏度）
+   ├─ 按标点切段（默认 ≤100 字/段，一段一个 URL，设备顺序播放）
+   ├─ 起 xf-tts 子进程：MSPLogin → QTTSSessionBegin → QTTSTextPut → QTTSAudioGet → 写 WAV
+   ├─ 重采样到 16kHz + 纯 JS 编码 MP3（无需 ffmpeg / lame）
+   ├─ 按参数哈希命名落盘，命中缓存直接复用
+   └─ 复用 PlaybackService 下发 priority_task_play
+```
+
+TTS 只负责产出音频文件，设备侧协议没有任何改动。
+
+### 5.2 目录布局
+
+SDK 与引擎不进 `node_modules`，单独放在 `tts.root` 下：
+
+```
+tts/                            # 开发机为 runtime/tts，安装后为 /opt/lingshen/tts
+  bin/xf-tts                    # native/ 的编译产物
+  lib/libmsc.so                 # 讯飞 MSC 5.0.44
+  msc/                          # MSC 工作目录（tts.workDir）
+    msc.cfg                     # 日志配置
+    res/tts/
+      common.jet                # 通用资源
+      xiaoyan.jet               # 女声
+      xiaofeng.jet              # 男声
+  cache/                        # 合成产物，挂载到 /tts
+```
+
+MSC 把日志与授权缓存写到 `<workDir>/msc/`，所以 `msc/res/tts` 与日志同目录。源目录里的 `*.log`、`*.logcache`、`*.ldata` 不会复制。
+
+### 5.3 准备 SDK 并编译引擎
+
+```bash
+npm run tts:setup                                        # 从同级的 ls22-linux 目录复制
+npm run tts:setup -- --from=/path/to/ls20_tts_xf_linux   # 或指定目录
+XF_SDK_DIR=/path/to/ls20_tts_xf_linux npm run tts:setup  # 或走环境变量
+
+npm run tts:build     # make -C native，产出 runtime/tts/bin/xf-tts（需要 gcc + make）
+npm run tts:check     # ldd 依赖 + xf-tts --help
+```
+
+复制内容约 10 MB：`libmsc.so`（6.0 MB）、`common.jet`（4.1 MB）、`xiaoyan.jet`（3.9 MB）、`xiaofeng.jet`（1.3 MB）。
+
+`libmsc.so` 最高只依赖 `GLIBC_2.15`，麒麟 V10 / CentOS 7+ 均可运行。开发机本地调试时把 `config.json` 的 `tts.root` 设为 `./runtime/tts`。
+
+### 5.4 调用
+
+```bash
+# 合成并播报
 curl -X POST http://127.0.0.1:18080/api/tts/play \
   -H 'Content-Type: application/json' \
-  -d '{"text":"3号库房温度25.5℃，请及时处理","sns":["0201A9ADAA05"],"vol":70}'
+  -d '{"text":"3号库房温度25.5℃，请及时处理","sns":["0202****0H6R"],"vol":70}'
 
-# 只合成，拿到 URL 自行使用
+# 只合成，拿地址自行使用
 curl -X POST http://127.0.0.1:18080/api/tts \
-  -H 'Content-Type: application/json' \
-  -d '{"text":"请注意，测试开始","speed":60}'
+  -H 'Content-Type: application/json' -d '{"text":"请注意，测试开始","speed":60}'
 
-# 引擎状态（排查首选）
+# 音色与引擎状态
+curl http://127.0.0.1:18080/api/tts/voices
 curl http://127.0.0.1:18080/api/tts/status
 ```
 
@@ -311,18 +234,57 @@ curl http://127.0.0.1:18080/api/tts/status
 {
   "code": 0,
   "tid": "1762..._1",
+  "voice": "female",
   "segments": 1,
   "urls": [{ "name": "tts_3e5a19a2b535e034.mp3", "uri": "http://192.168.1.10:18080/tts/tts_3e5a19a2b535e034.mp3" }],
   "cached": false,
   "synthMs": 820,
-  "results": [{ "sn": "0201A9ADAA05", "topic": "...", "ok": true }]
+  "totalMs": 850,
+  "text": "三号库房温度二十五点五摄氏度请及时处理",
+  "results": [{ "sn": "0202****0H6R", "topic": "ls20://ls20://0202****0H6R/req", "ok": true }]
 }
 ```
 
-### 文本归一化
+- `voice` 留空用 `tts.defaultVoice`；`speed` / `volume` / `pitch` 均为 0-100，50 为正常，缺省走配置。
+- 音色、参数、文本任意一项不同都算不同缓存文件，互不覆盖。
+- 文本超过 `tts.maxChars`（默认 300）返回 400；队列满或引擎不可用返回 503。
 
-送合成前会先做口语化处理，规则在 `src/tts/text/text-normalize.ts`。讯飞引擎本身也能读数字，
-保留这一层是为了让单位、日期、百分号的读法在所有音色下保持一致：
+### 5.5 配置项
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `tts.enabled` | `true` | 关闭后 TTS 接口返回 503，不影响 `/api/play` |
+| `tts.root` | `./tts` | 引擎、SDK 资源、缓存根目录（相对路径按进程工作目录解析） |
+| `tts.bin` | 空 | 引擎路径，留空用 `<root>/bin/xf-tts` |
+| `tts.appId` | `5ff40276` | MSC appid，必须与 jet 资源授权一致，否则报 11200 |
+| `tts.workDir` | 空 | MSC 工作目录，留空用 `tts.root`；相对路径按 `tts.root` 解析 |
+| `tts.voices` | 女声 + 男声 | `{id,label,jet}`，`jet` 对应 `<workDir>/msc/res/tts/<jet>.jet` |
+| `tts.defaultVoice` | `female` | 默认音色 id，留空取第一个 |
+| `tts.volume` / `tts.pitch` | `50` | 默认合成音量 / 音调 0-100 |
+| `tts.urlPrefix` | `"/tts"` | 产物 URL 前缀，同时作为静态挂载路径 |
+| `tts.format` | `mp3` | `mp3` 或 `wav`；mp3 为 16kHz 单声道 |
+| `tts.sampleRate` | `16000` | 输出采样率，`0` 表示保持引擎原始采样率 |
+| `tts.bitrateKbps` | `32` | MP3 码率 |
+| `tts.maxChars` | `300` | 单次请求文本上限 |
+| `tts.segmentChars` | `100` | 切段长度，一段一个 URL |
+| `tts.concurrency` | `1` | 并发合成数，每段是一个 MSC 进程，建议保持 1 |
+| `tts.maxQueue` | `20` | 排队上限 |
+| `tts.timeoutMs` | `30000` | 单段合成超时，超时 kill 子进程 |
+| `tts.cacheTtlHours` | `168` | 产物保留时长（小时） |
+| `tts.cacheMaxMb` | `500` | 产物总容量上限，超出按最旧优先淘汰 |
+
+### 5.6 音色
+
+| id | label | jet |
+|---|---|---|
+| `female` | 女声（小燕） | `xiaoyan` |
+| `male` | 男声（小峰） | `xiaofeng` |
+
+新增音色：把 `xxx.jet` 放进 `tts/msc/res/tts/`，再在 `tts.voices` 加一项 `{ "id": "xxx", "label": "...", "jet": "xxx" }`。音色资源必须与 `tts.appId` 的授权匹配，未授权的 jet 合成时报 `11200`。
+
+### 5.7 文本归一化
+
+规则在 `src/tts/text/text-normalize.ts`。引擎本身能读数字，这一层是为了让单位、日期、百分号的读法在所有音色下保持一致：
 
 | 输入 | 输出 |
 |---|---|
@@ -335,39 +297,67 @@ curl http://127.0.0.1:18080/api/tts/status
 | `3~5层` | `三到五层` |
 | `-5℃` | `零下五摄氏度` |
 
-**多音字**：讯飞引擎自带分词与多音字词典（「重庆」「银行」等按上下文读），一般不需要额外处理。若某个专有名词读错，可在调用前自行改写成同音字或加空格分隔。
+多音字由引擎自带词典处理（「重庆」「银行」按上下文读）。专有名词读错时，可在调用前改写成同音字或加空格分隔。
 
-## 设备协议（已真机验证）
+### 5.8 TTS 排查
 
-主题（以实测设备 `020292EB68C3` 为例）：
+先绕过服务确认引擎本身能出声：
+
+```bash
+cd /opt/lingshen/tts
+printf '三号库房温度异常，请及时处理。' > /tmp/t.txt
+LD_LIBRARY_PATH=lib ./bin/xf-tts \
+  --text-file /tmp/t.txt --output /tmp/t.wav \
+  --appid 5ff40276 \
+  --work-dir /opt/lingshen/tts \
+  --res-dir /opt/lingshen/tts/msc/res/tts \
+  --voice xiaoyan --speed 50 --volume 50 --pitch 50
+```
+
+加 `--verbose` 可打印实际 cwd、work_dir、传给 MSC 的资源路径以及每次 `QTTSAudioGet` 的返回值。
+
+| 现象 | 排查方向 |
+|---|---|
+| `MSPLogin failed` / `11200` | `tts.appId` 与 jet 授权不匹配。日志中 `read auth file failed err=11200` 是非致命警告，合成成功可忽略 |
+| `QTTSSessionBegin failed` / `10105` | `--work-dir`、`--res-dir` 不对，或 jet 文件缺失 |
+| 合成结果为空 | MSC 只认「相对 `<work-dir>/msc`」的资源路径。`xf-tts` 已自动把 `--res-dir` 转成 `res/tts/xxx.jet`，仍为空时用 `--verbose` 确认 |
+| `缺少音色资源` | `msc/res/tts/<jet>.jet` 没复制过来，重新 `npm run tts:setup` |
+| `libmsc.so: cannot open shared object file` | 用 `tts.bin` 指向了别处的 `xf-tts`，导致 `$ORIGIN/../lib` 失效；保持默认布局或补 `LD_LIBRARY_PATH` |
+| 合成很慢 | 每次合成都会加载 jet 资源，确认 `tts.concurrency` 为 1 |
+
+详细日志在 `tts/msc/msc.log`、`tts/msc/tts_local.log`，日志级别在 `tts/msc/msc.cfg` 调整。
+
+## 6. 设备协议
+
+主题：
 
 ```
-下行   ls20://ls20://020292EB68C3/req      ← 注意是两层 ls20://
+下行   ls20://ls20://0202****0H6R/req
 上行   ls20/request
-遗嘱   ls20/will                          （设备掉线通知，op=offline）
-回包   ls20://ls20://020292EB68C3/resp     （报文里的 source 字段）
+遗嘱   ls20/will                     （掉线通知，op=offline）
+回包   ls20://ls20://0202****0H6R/resp
 ```
 
-原因是设备上报的 `sn` 本身带前缀（`ls20://020292EB68C3`），原厂用 `sn.split(":")[0] + "://" + sn + "/req"` 拼接，于是成了两层。
-本项目内部统一用裸 SN，拼主题时由 `vendor.topicMode` 控制：
+设备上报的 `sn` 本身带前缀（`ls20://0202****0H6R`），厂家的 `mgrserver` 用 `sn.split(":")[0] + "://" + sn + "/req"` 拼接，于是成了两层。本项目内部统一用裸 SN，拼主题时由 `vendor.topicMode` 控制：
 
 | topicMode | 生成的主题 |
 |---|---|
-| `double`（默认，原厂一致） | `ls20://ls20://<SN>/req` |
-| `simple` | `ls20://<SN>/req` |
-| `vendor-colon` | `ls20://ls20:<SN>/req` |
+| `double`（默认，与厂家实现一致） | `ls20://ls20://0202****0H6R/req` |
+| `simple` | `ls20://0202****0H6R/req` |
+| `vendor-colon` | `ls20://ls20:0202****0H6R/req` |
 
-本服务实现的操作：
+支持的操作：
 
 | op | 方向 | 说明 |
 |---|---|---|
 | `devLogin` | 设备 → 服务 | 设备上线，服务回应答完成注册 |
 | `priority_task_play` | 服务 → 设备 | `type=5`，`urls[].uri` 为 HTTP 文件地址 |
 | `priority_task_stop` | 服务 → 设备 | 停止任务（`tid` + `tname`） |
-| `priority_task_setvol` | 服务 → 设备 | 调整音量 |
+| `priority_task_setvol` | 服务 → 设备 | 调整任务音量 |
+| `device_mute` / `device_unmute` | 服务 → 设备 | 设备整机静音 / 取消 |
 | `task_started` / `task_finished` | 设备 → 服务 | 设备自动上报，播完无需轮询 |
 
-实际下发的播放报文（实测原样）：
+实际下发的播放报文：
 
 ```json
 {
@@ -377,20 +367,18 @@ curl http://127.0.0.1:18080/api/tts/status
   "source": "noreplay",
   "params": {
     "count": 1, "length": 0, "level": 99999, "name": "实时播放",
-    "tid": "16_20_02_188", "vol": 60, "type": 5, "uid": "<用户id>",
-    "urls": [{ "name": "a.mp3", "uri": "http://30.0.16.48:10008/tts/xxx.mp3" }]
+    "tid": "<任务ID>", "vol": 60, "type": 5, "uid": "<用户ID>",
+    "urls": [{ "name": "a.mp3", "uri": "http://<本机IP>:18080/tts/xxx.mp3" }]
   },
   "callid": 0
 }
 ```
 
-`devLogin` 应答字段结构见 `src/devices/devices.service.ts` 的 `buildLoginAck()`，取自实测报文，只把 `resserver_urls` 的 IP/端口换成本服务地址。
+`devLogin` 应答结构见 `src/devices/devices.service.ts` 的 `buildLoginAck()`，只把 `resserver_urls` 的 IP/端口换成本服务地址。
 
-## 抓包工具（排查用）
+### 抓包工具
 
-协议已于 2026-11-04 用真机抓包确认。后续如果遇到"设备收不到指令""应答不对"之类的问题，可以再抓一次对比。
-
-工具只订阅、不发送，不影响现有业务。包内自带 Node 运行时，目标机**不需要安装 Node**：
+只订阅不发送，不影响现有业务。包内自带 Node 运行时，目标机不需要安装 Node：
 
 ```bash
 tar -xzf lingsheng-core-xf-0.1.0.tar.gz -C /tmp/ls
@@ -398,29 +386,85 @@ cd /tmp/ls
 sh capture.sh --host 127.0.0.1 --port 21883
 ```
 
-`capture.sh` 会自动给包内 `node/bin/node` 补执行位（从 Windows 打包过来没有执行权限）。
+然后依次：让音柱重新登录 → 触发一次即时播放 → 触发停止 → `Ctrl+C`。当前目录生成 `capture-<时间>.log`，内含 `devLogin` 上行报文、服务端应答和 `priority_task_play` 完整参数。
 
-然后依次：让音柱重新登录 → 在旧控制台点一次即时播放 → 点停止 → `Ctrl+C`。
-当前目录会生成 `capture-<时间>.log`，里面同时包含 `devLogin` 上行报文、服务端应答、以及 `priority_task_play` 的完整参数，据此核对 `topicMode` 与应答字段即可。
+开发机已装 Node 时也可直接 `node tools/capture.mjs --host 127.0.0.1 --port 21883`。
 
-> 开发机上已装 Node 时，也可以直接 `node tools/capture.mjs --host 127.0.0.1 --port 21883`。
+## 7. 快速开始
 
-## 离线部署（麒麟 V10 x86_64）
+```bash
+npm install
+npm run build
+npm start
+```
+
+配置直接读项目根目录的 `config.json`（没有该文件时全部使用默认值），字段见第 3 节。
+
+启动后：
+
+- `http://localhost:18080/` — 接口索引
+- `http://localhost:18080/api/health` — 健康检查
+- 设备端把 MQTT 服务器指向 `<本机IP>:21883` 即可上线
+
+> 依赖用 npm 管理。若用 pnpm 12+，先执行 `pnpm approve-builds` 放行 `@nestjs/core`。
+
+TTS 需要额外的 SDK 与编译步骤，见第 5 节；不准备 TTS 不影响播报功能。
+
+## 8. 部署
+
+适配环境：
+
+| 项 | 说明 |
+|---|---|
+| 操作系统 | 银河麒麟高级服务器操作系统 V10 SP3 2403 |
+| 安装镜像 | `Kylin-Server-V10-SP3-2403-Release-20240426-X86_64.iso` |
+| CPU | 海光 C86（x86_64） |
+
+### 8.1 构建打包
+
+在构建机上执行：
 
 ```bash
 npm ci
-npm run tts:setup           # 首次或更换 SDK 时：复制 libmsc.so 与 jet 资源
-npm run tts:build           # 编译 xf-tts（需要 gcc）
-npm run build
-npm run pack:offline        # 生成 release/lingsheng-core-xf-<ver>.tar.gz
+npm run tts:setup      # 首次或更换 SDK 时执行
+npm run tts:build      # 需要 gcc
+npm run pack:offline   # 生成 release/lingsheng-core-xf-<ver>.tar.gz
 ```
 
-把 `runtime/node-linux-x64` 放好可随包携带 Node 运行时（可选）。到目标机：
+把 `runtime/node-linux-x64` 放好可随包携带 Node 运行时（可选）。
+
+未执行 `tts:setup` / `tts:build` 时打包仍会成功，只是 TTS 接口返回 503，播报功能不受影响。
+
+### 8.2 安装
 
 ```bash
-tar -xzf lingsheng-core-xf-0.1.0.tar.gz -C /tmp/pack
+tar xzf lingsheng-core-xf-<ver>.tar.gz -C /tmp/pack
 sh /tmp/pack/deploy/install.sh
-systemctl start lingshen-core
 ```
 
-`install.sh` 只做安装与配置，**不会自动启动服务**。安装内容：程序复制到 `/opt/lingshen`、生成 `config.json`（自动填入本机 IP）、安装 systemd 服务、放行端口。
+`install.sh` 只安装不启动，做的事：
+
+- 程序复制到 `/opt/lingshen`，`tts/` 复制到 `/opt/lingshen/tts` 并补执行位、创建 `cache/`
+- 首次安装生成 `config.json`（自动填入本机 IP 与绝对路径 `tts.root`；升级时也会纠正相对路径）
+- 安装 systemd 服务、放行 18080 / 21883 端口、检查端口占用
+
+### 8.3 服务运维
+
+```bash
+systemctl start lingshen-core      # 启动
+systemctl enable lingshen-core     # 开机自启
+systemctl restart lingshen-core    # 改完配置后重启
+systemctl status lingshen-core     # 运行状态
+journalctl -u lingshen-core -f     # 实时日志
+curl http://127.0.0.1:18080/api/health   # 健康检查
+```
+
+安装后的路径：
+
+| 内容 | 路径 |
+|---|---|
+| 程序 | `/opt/lingshen/app` |
+| 配置 | `/opt/lingshen/config.json`（systemd 通过 `LINGSHEN_CONFIG` 指定） |
+| 媒体库 | `/opt/lingshen/media` |
+| TTS 引擎与缓存 | `/opt/lingshen/tts` |
+| 启动脚本 | `/opt/lingshen/run.sh` |
