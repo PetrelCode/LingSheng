@@ -56,7 +56,7 @@ deploy/                    离线打包与安装脚本
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `server.httpPort` | `18080` | HTTP 端口 |
-| `server.publicBaseUrl` | 空 | **设备访问本机的地址**，如 `http://192.168.1.10:18080`；留空按请求 host 推断 |
+| `server.publicBaseUrl` | 空 | **设备访问本机的地址**，如 `http://192.168.1.10:18080`；留空按请求 host 推断；配置的 IP 已不属于本机网卡时，启动会自动换成当前网卡 IP |
 | `mqtt.port` | `21883` | 内嵌 Broker 端口，与厂家版本一致，设备不用改配置 |
 | `mqtt.username/password` | 空 | 留空表示免认证 |
 | `vendor.code` | `ls20` | 厂商编号，参与主题与报文 `app` 字段 |
@@ -67,6 +67,10 @@ deploy/                    离线打包与安装脚本
 | `playback.defaultLevel` | `99999` | 默认优先级 |
 | `device.offlineTimeoutSec` | `180` | 超过该时长无上报判定离线 |
 | `tts.*` | 见第 5.5 节 | 语音合成相关 |
+
+> `server.publicBaseUrl` 里的 IP 会在启动时校验：不属于本机网卡（换网段、DHCP 重新分配等）就改用当前网卡 IP，并在日志打印告警，例如
+> `server.publicBaseUrl 配置的是 http://192.168.3.93:18080，该 IP 不属于本机网卡，已改用 http://192.168.3.94:18080`。
+> 只处理 IPv4 字面量，域名、IPv6、空值保持原样。
 
 也可用环境变量覆盖（优先级高于 `config.json`）：
 
@@ -431,7 +435,29 @@ npm run tts:build      # 需要 gcc
 npm run pack:offline   # 生成 release/lingsheng-core-xf-<ver>.tar.gz
 ```
 
-把 `runtime/node-linux-x64` 放好可随包携带 Node 运行时（可选）。
+**随包携带 Node 运行时（可选）**
+
+把官方 linux-x64 的 Node 解压到 `runtime/node-linux-x64/`，打包时会放进包内 `node/`：
+
+```bash
+mkdir -p runtime/node-linux-x64
+curl -fLO https://nodejs.org/dist/v20.18.1/node-v20.18.1-linux-x64.tar.xz
+tar -xJf node-v20.18.1-linux-x64.tar.xz -C runtime/node-linux-x64 --strip-components=1
+runtime/node-linux-x64/bin/node -v
+```
+
+- `--strip-components=1` 去掉压缩包顶层目录，否则路径会多一层，打包脚本找不到 `bin/node`
+- 没有外网时先在别的机器下载同一个 `tar.xz` 再拷过来解压；也可直接复制本机已装的 Node：`cp -a /usr/local/node-vXX-linux-x64/. runtime/node-linux-x64/`
+- 必须是 linux-x64、版本 ≥ 18（见 `package.json` 的 `engines`），不要用 musl 或 arm64 构建
+- 该目录已在 `.gitignore` 中，只进离线包，不进版本库
+
+打包后确认已包含 Node：
+
+```bash
+tar -tzf release/lingsheng-core-xf-<ver>.tar.gz | grep 'node/bin/node'
+```
+
+不放 Node 时打包仍会成功，安装时提示「目标机需自带 Node 18+」，改用系统 `node`。
 
 未执行 `tts:setup` / `tts:build` 时打包仍会成功，只是 TTS 接口返回 503，播报功能不受影响。
 
@@ -445,6 +471,7 @@ sh /tmp/pack/deploy/install.sh
 `install.sh` 只安装不启动，做的事：
 
 - 程序复制到 `/opt/lingshen`，`tts/` 复制到 `/opt/lingshen/tts` 并补执行位、创建 `cache/`
+- 选择 Node 运行时：**包内有 `node/bin/node` 就用包内的**（复制到 `/opt/lingshen/node/bin/node`），没有才用系统的 `node`；两者都没有则安装失败。实际使用哪个会在安装日志里打印
 - 首次安装生成 `config.json`（自动填入本机 IP 与绝对路径 `tts.root`；升级时也会纠正相对路径）
 - 安装 systemd 服务、放行 18080 / 21883 端口、检查端口占用
 

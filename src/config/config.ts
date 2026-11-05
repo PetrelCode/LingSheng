@@ -132,6 +132,9 @@ function deepMerge<T>(base: T, patch: any): T {
   return out;
 }
 
+/** 启动时需要提醒用户的事项，由 main.ts 统一打印 */
+export const STARTUP_NOTICES: string[] = [];
+
 export function configFilePath(): string {
   return process.env.LINGSHEN_CONFIG || path.resolve(process.cwd(), 'config.json');
 }
@@ -178,7 +181,44 @@ export function loadConfig(): AppConfig {
     const id = String(v.id || `voice${i + 1}`);
     return { ...v, id, label: v.label || id, jet: String(v.jet || id) };
   });
+
+  cfg.server.publicBaseUrl = normalizePublicBaseUrl(cfg);
   return cfg;
+}
+
+/** 本机所有网卡上的 IPv4（含回环） */
+function localIpv4Set(): Set<string> {
+  const set = new Set<string>();
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const item of list || []) {
+      if (item.family === 'IPv4') set.add(item.address);
+    }
+  }
+  return set;
+}
+
+/**
+ * 配置里的地址若指向一个不属于本机网卡的 IP（换网段、DHCP 重新分配、整机克隆后等），
+ * 启动时改用当前网卡 IP，避免把访问不到的地址下发给设备。
+ * 只处理 IPv4 字面量；域名、IPv6、空值都保持原样。
+ */
+function normalizePublicBaseUrl(cfg: AppConfig): string {
+  const raw = (cfg.server.publicBaseUrl || '').trim();
+  if (!raw) return '';
+
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return raw;
+  }
+  if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(url.hostname)) return raw;
+  if (localIpv4Set().has(url.hostname)) return raw;
+
+  const port = url.port || String(cfg.server.httpPort);
+  const next = `${url.protocol}//${detectLocalIp()}:${port}`;
+  STARTUP_NOTICES.push(`server.publicBaseUrl 配置的是 ${raw}，该 IP 不属于本机网卡，已改用 ${next}`);
+  return next;
 }
 
 /** 引擎可执行文件路径 */
@@ -210,7 +250,11 @@ export function ttsCacheDir(cfg: AppConfig): string {
 export const CONFIG = loadConfig();
 export const APP_CONFIG = 'APP_CONFIG';
 
-/** 本机第一个非回环 IPv4，用于给设备下发文件地址 */
+/**
+ * 本机非回环 IPv4，用于给设备下发文件地址。
+ * 按网段优先级挑选，避免选到 docker0（172.17.x）这类虚拟网卡：
+ * 192.168.x → 10.x → 172.16-31.x → 其他。
+ */
 export function detectLocalIp(): string {
   const ifaces = os.networkInterfaces();
   const candidates: string[] = [];
@@ -219,8 +263,15 @@ export function detectLocalIp(): string {
       if (item.family === 'IPv4' && !item.internal) candidates.push(item.address);
     }
   }
-  const preferred = candidates.find((ip) => ip.startsWith('192.168.') || ip.startsWith('10.') || /^172\.(1[6-9]|2\d|3[01])\./.test(ip));
-  return preferred || candidates[0] || '127.0.0.1';
+  if (candidates.length === 0) return '127.0.0.1';
+  return candidates.reduce((best, ip) => (ipv4Score(ip) < ipv4Score(best) ? ip : best));
+}
+
+function ipv4Score(ip: string): number {
+  if (ip.startsWith('192.168.')) return 0;
+  if (ip.startsWith('10.')) return 1;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return 2;
+  return 3;
 }
 
 /** 解析 "http://1.2.3.4:8080" 中的 host */

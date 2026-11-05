@@ -5,7 +5,7 @@ import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 
 import { AppModule } from './app.module';
-import { CONFIG, configFilePath, detectLocalIp, ttsCacheDir } from './config/config';
+import { CONFIG, configFilePath, detectLocalIp, STARTUP_NOTICES, ttsCacheDir } from './config/config';
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
@@ -25,6 +25,7 @@ async function bootstrap(): Promise<void> {
   logger.log(`配置文件: ${configFilePath()}`);
   logger.log(`HTTP      http://${CONFIG.server.host}:${CONFIG.server.httpPort}`);
   logger.log(`设备访问根地址: ${lan}`);
+  for (const notice of STARTUP_NOTICES) logger.warn(notice);
   logger.log(`MQTT      tcp://${CONFIG.server.host}:${CONFIG.mqtt.port}`);
   logger.log(`媒体目录: ${CONFIG.media.dir}`);
   logger.log(`TTS 目录: ${CONFIG.tts.root}（产物 ${ttsCacheDir(CONFIG)}，${CONFIG.tts.enabled ? '已启用' : '已关闭'}）`);
