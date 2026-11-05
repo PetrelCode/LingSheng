@@ -5,7 +5,7 @@ import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 
 import { AppModule } from './app.module';
-import { CONFIG, configFilePath, detectLocalIp, STARTUP_NOTICES, ttsCacheDir } from './config/config';
+import { CONFIG, configFilePath, detectLocalIp, effectivePublicBase, STARTUP_NOTICES, ttsCacheDir } from './config/config';
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
@@ -21,7 +21,7 @@ async function bootstrap(): Promise<void> {
 
   await app.listen(CONFIG.server.httpPort, CONFIG.server.host);
 
-  const lan = CONFIG.server.publicBaseUrl || `http://${detectLocalIp()}:${CONFIG.server.httpPort}`;
+  const lan = effectivePublicBase(CONFIG) || `http://${detectLocalIp()}:${CONFIG.server.httpPort}`;
   logger.log(`配置文件: ${configFilePath()}`);
   logger.log(`HTTP      http://${CONFIG.server.host}:${CONFIG.server.httpPort}`);
   logger.log(`设备访问根地址: ${lan}`);

@@ -2,7 +2,7 @@ import { BadRequestException, Body, Controller, Get, Inject, Post, Req } from '@
 import type { Request } from 'express';
 
 import { resolveBase, toAbsoluteUrl } from '../common/url.util';
-import { APP_CONFIG, AppConfig } from '../config/config';
+import { APP_CONFIG, AppConfig, effectivePublicBase } from '../config/config';
 import { PlaybackService } from '../playback/playback.service';
 import { TtsService } from './tts.service';
 
@@ -58,7 +58,7 @@ export class TtsController {
     const sns = normalizeSns(dto.sns);
     const text = requireText(dto.text, this.cfg.tts.maxChars);
     const format = normalizeFormat(dto.format, this.cfg.tts.format);
-    const base = resolveBase(dto.baseUrl, this.cfg.server.publicBaseUrl, req);
+    const base = resolveBase(dto.baseUrl, effectivePublicBase(this.cfg), req);
     const started = Date.now();
 
     const synthesized = await this.tts.synthesizeMany(text, {
@@ -112,7 +112,7 @@ export class TtsController {
       pitch: dto.pitch,
       format,
     });
-    const base = resolveBase(undefined, this.cfg.server.publicBaseUrl, req);
+    const base = resolveBase(undefined, effectivePublicBase(this.cfg), req);
     return {
       code: 0,
       name: item.name,

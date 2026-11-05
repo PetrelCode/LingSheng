@@ -2,7 +2,7 @@ import { BadRequestException, Body, Controller, Get, Inject, Post, Req } from '@
 import type { Request } from 'express';
 
 import { resolveBase, toAbsoluteUrl } from '../common/url.util';
-import { APP_CONFIG, AppConfig } from '../config/config';
+import { APP_CONFIG, AppConfig, effectivePublicBase } from '../config/config';
 import { PlaybackService } from './playback.service';
 
 class PlayDto {
@@ -53,7 +53,7 @@ export class PlaybackController {
     const sns = normalizeSns(dto.sns);
     if (!dto.url && !dto.media) throw new BadRequestException('url 与 media 至少提供一个');
 
-    const base = resolveBase(dto.baseUrl, this.cfg.server.publicBaseUrl, req);
+    const base = resolveBase(dto.baseUrl, effectivePublicBase(this.cfg), req);
     const uri = dto.url ? toAbsoluteUrl(dto.url, base) : `${base}${this.cfg.media.urlPrefix}/${encodeURIComponent(dto.media!)}`;
     const displayName = dto.name || dto.media || decodeURIComponent(uri.split('/').pop() || 'audio');
 

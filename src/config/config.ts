@@ -182,7 +182,15 @@ export function loadConfig(): AppConfig {
     return { ...v, id, label: v.label || id, jet: String(v.jet || id) };
   });
 
-  cfg.server.publicBaseUrl = normalizePublicBaseUrl(cfg);
+  const base = resolveAgainstNic(cfg.server.publicBaseUrl, cfg.server.httpPort);
+  if (base.noNic) {
+    STARTUP_NOTICES.push(
+      `未检测到本机 IPv4 网卡（网卡可能还没就绪），暂时沿用 server.publicBaseUrl=${base.staleFrom}；网卡就绪后会自动改用新地址`,
+    );
+  } else if (base.staleFrom) {
+    STARTUP_NOTICES.push(`server.publicBaseUrl 配置的是 ${base.staleFrom}，该 IP 不属于本机网卡，已改用 ${base.value}`);
+  }
+  cfg.server.publicBaseUrl = base.value;
   return cfg;
 }
 
@@ -199,26 +207,45 @@ function localIpv4Set(): Set<string> {
 
 /**
  * 配置里的地址若指向一个不属于本机网卡的 IP（换网段、DHCP 重新分配、整机克隆后等），
- * 启动时改用当前网卡 IP，避免把访问不到的地址下发给设备。
- * 只处理 IPv4 字面量；域名、IPv6、空值都保持原样。
+ * 改用当前网卡 IP，避免把访问不到的地址下发给设备。
+ * 只处理 IPv4 字面量；域名、IPv6、空值保持原样。
+ * 检测不到任何非回环网卡时保留配置值，宁可报错也不下发 127.0.0.1。
  */
-function normalizePublicBaseUrl(cfg: AppConfig): string {
-  const raw = (cfg.server.publicBaseUrl || '').trim();
-  if (!raw) return '';
+function resolveAgainstNic(raw: string, httpPort: number): { value: string; staleFrom?: string; noNic?: boolean } {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return { value: '' };
 
   let url: URL;
   try {
-    url = new URL(raw);
+    url = new URL(trimmed);
   } catch {
-    return raw;
+    return { value: trimmed };
   }
-  if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(url.hostname)) return raw;
-  if (localIpv4Set().has(url.hostname)) return raw;
+  if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(url.hostname)) return { value: trimmed };
+  if (localIpv4Set().has(url.hostname)) return { value: trimmed };
 
-  const port = url.port || String(cfg.server.httpPort);
-  const next = `${url.protocol}//${detectLocalIp()}:${port}`;
-  STARTUP_NOTICES.push(`server.publicBaseUrl 配置的是 ${raw}，该 IP 不属于本机网卡，已改用 ${next}`);
-  return next;
+  const ip = detectLocalIp();
+  if (ip === '127.0.0.1') return { value: trimmed, staleFrom: trimmed, noNic: true };
+
+  const port = url.port || String(httpPort);
+  return { value: `${url.protocol}//${ip}:${port}`, staleFrom: trimmed };
+}
+
+let cachedPublicBase = '';
+let cachedPublicBaseAt = 0;
+
+/**
+ * 请求与登录应答使用的设备访问根地址：10 秒缓存，配置的 IP 一旦失效就跟随当前网卡。
+ * 这样开机时网卡还没就绪、或运行中 DHCP 换了地址，都能自动纠正，不必改配置或重启。
+ */
+export function effectivePublicBase(cfg: AppConfig, ttlMs = 10_000): string {
+  const raw = cfg.server.publicBaseUrl;
+  if (!raw) return '';
+  const now = Date.now();
+  if (cachedPublicBase && now - cachedPublicBaseAt < ttlMs) return cachedPublicBase;
+  cachedPublicBase = resolveAgainstNic(raw, cfg.server.httpPort).value;
+  cachedPublicBaseAt = now;
+  return cachedPublicBase;
 }
 
 /** 引擎可执行文件路径 */

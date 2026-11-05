@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Subscription } from 'rxjs';
 
-import { APP_CONFIG, AppConfig, hostOfBaseUrl } from '../config/config';
+import { APP_CONFIG, AppConfig, effectivePublicBase, hostOfBaseUrl } from '../config/config';
 import { IncomingMessage, MqttBrokerService } from '../mqtt/mqtt-broker.service';
 import { buildDeviceRespTopic, normalizeSn, opOf } from '../protocol/protocol';
 
@@ -136,7 +136,7 @@ export class DevicesService implements OnModuleInit, OnModuleDestroy {
    * 只把 resserver 的 ip / 端口替换成本服务自己的地址。
    */
   private buildLoginAck(dev: DeviceState) {
-    const host = hostOfBaseUrl(this.cfg.server.publicBaseUrl);
+    const host = hostOfBaseUrl(effectivePublicBase(this.cfg));
     const httpPort = String(this.cfg.server.httpPort);
     const extra = this.cfg.device.loginAck ?? {};
     return {
