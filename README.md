@@ -1,15 +1,44 @@
 # lingsheng-core-xf
 
-菱声 LS20/LS22 音柱控制服务（讯飞离线 TTS 版）。一个 Node 进程同时提供 HTTP 接口、内嵌 MQTT Broker 和静态文件服务，直接对音柱下发播放指令。
+[![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen.svg)](https://nodejs.org)
+[![NestJS](https://img.shields.io/badge/NestJS-10-ea2845.svg)](https://nestjs.com)
+[![Platform](https://img.shields.io/badge/platform-linux--x64-blue.svg)](#8-部署)
 
-两类能力：
+> 菱声 LS20/LS22 音柱控制服务（讯飞离线 TTS 版）。一个 Node 进程同时提供 HTTP 接口、内嵌 MQTT Broker 和静态文件服务，直接对音柱下发播放指令。
 
-- **即时播报**：调接口让一台或多台音柱播放指定音频（媒体库文件或任意可访问 URL）。
-- **文字转语音**：提交文字，服务端离线合成为音频后走同一条播报链路。
+## 功能一览
+
+| 能力 | 说明 |
+|---|---|
+| **即时播报** | 调接口让一台或多台音柱播放指定音频（媒体库文件或任意可访问 URL） |
+| **文字转语音** | 提交文字，服务端离线合成为音频后走同一条播报链路 |
+| **设备管理** | 内置 MQTT Broker 接收设备登录，维护注册表与在线状态 |
+| **媒体库** | 音频上传 / 列表 / 删除，随服务一并提供静态下载 |
+
+| 环境 | 要求 |
+|---|---|
+| 运行时 | Node.js ≥ 18 |
+| 系统 | Linux x64（麒麟 V10 / CentOS 7+）；Windows 可开发，仅 TTS 不可用 |
+| 端口 | `18080`（HTTP）、`21883`（MQTT） |
+
+## 目录
+
+| 章节 | 内容 |
+|---|---|
+| [1. 整体结构](#1-整体结构) | 进程架构、与厂家版本的对应关系 |
+| [2. 目录结构](#2-目录结构) | 源码目录说明 |
+| [3. 配置](#3-配置) | `config.json` 字段与环境变量 |
+| [4. 接口](#4-接口) | HTTP 接口一览与调用示例 |
+| [5. 文字转语音（TTS）](#5-文字转语音tts) | 离线合成流程、SDK 准备、排查 |
+| [6. 设备协议](#6-设备协议) | MQTT 主题、报文与抓包工具 |
+| [7. 快速开始](#7-快速开始) | 本地跑起来 |
+| [8. 部署](#8-部署) | 离线打包、安装与运维 |
+| [9. 许可证](#9-许可证) | MIT |
 
 ## 1. 整体结构
 
-```
+```text
                  HTTP API :18080                   MQTT :21883
    外部系统 ──────────►┌──────────────────────────────────────┐◄────── 音柱设备
    浏览器/设备 ◄───────│  NestJS 单进程                        │
@@ -34,7 +63,7 @@
 
 ## 2. 目录结构
 
-```
+```text
 src/
   main.ts                  启动、静态目录挂载
   config/config.ts         配置加载与路径解析
@@ -172,7 +201,7 @@ curl -X DELETE http://127.0.0.1:18080/api/media/alarm.mp3    # 删除
 
 ### 5.1 处理流程
 
-```
+```text
 POST /api/tts/play { text, sns }
    ├─ 文本归一化：数字/单位/日期转口语（3号库房 25.5℃ → 三号库房 二十五点五摄氏度）
    ├─ 按标点切段（默认 ≤100 字/段，一段一个 URL，设备顺序播放）
@@ -188,7 +217,7 @@ TTS 只负责产出音频文件，设备侧协议没有任何改动。
 
 SDK 与引擎不进 `node_modules`，单独放在 `tts.root` 下：
 
-```
+```text
 tts/                            # 开发机为 runtime/tts，安装后为 /opt/lingshen/tts
   bin/xf-tts                    # native/ 的编译产物
   lib/libmsc.so                 # 讯飞 MSC 5.0.44
@@ -338,7 +367,7 @@ LD_LIBRARY_PATH=lib ./bin/xf-tts \
 
 主题：
 
-```
+```text
 下行   ls20://ls20://0202****0H6R/req
 上行   ls20/request
 遗嘱   ls20/will                     （掉线通知，op=offline）
@@ -383,7 +412,7 @@ LD_LIBRARY_PATH=lib ./bin/xf-tts \
 
 `devLogin` 应答结构见 `src/devices/devices.service.ts` 的 `buildLoginAck()`，只把 `resserver_urls` 的 IP/端口换成本服务地址。
 
-### 抓包工具
+### 6.1 抓包工具
 
 只订阅不发送，不影响现有业务。包内自带 Node 运行时，目标机不需要安装 Node：
 
@@ -498,3 +527,15 @@ curl http://127.0.0.1:18080/api/health   # 健康检查
 | 媒体库 | `/opt/lingshen/media` |
 | TTS 引擎与缓存 | `/opt/lingshen/tts` |
 | 启动脚本 | `/opt/lingshen/run.sh` |
+
+## 9. 许可证
+
+本项目采用 [MIT 许可证](LICENSE)，版权所有 (c) 2026 PetrelCode。
+
+```text
+MIT License
+
+Copyright (c) 2026 PetrelCode
+```
+
+> 注意：`ls22-linux` 目录为设备厂商提供的原始程序与资源（含讯飞 MSC SDK 及其 jet 授权资源），不在本项目 MIT 许可范围内，其使用权仍受厂商与讯飞授权条款约束。
