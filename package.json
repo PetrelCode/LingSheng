@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "description": "菱声 LS20/LS22 音柱控制核心服务（讯飞离线 TTS 版）",
+  "license": "MIT",
+  "author": "PetrelCode",
   "main": "dist/main.js",
   "engines": {
     "node": ">=18"
